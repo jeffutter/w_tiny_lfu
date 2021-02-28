@@ -5,17 +5,21 @@ defmodule WTinyLFU.BloomFilter do
   Create a new Bloom filter with the given capacity and false positive probability
   """
   @spec new(atom(), non_neg_integer(), float()) :: :ok
-  def new(name, capacity, false_positive_probability) do
-    factor = -:math.log(false_positive_probability) / (:math.log(2) * :math.log(2))
-    bits = ceil(capacity * factor)
-    hashes = ceil(:math.log(2) * bits / capacity)
+  def new(name, n, p) do
+    # n is the capacity of the filter
+    # m is the number of bits in the array
+    # k is the number of hash functions
+    # p is false positive probability
 
-    atomics = ceil(bits / 64)
+    m = ceil(-1 * (n * :math.log(p) / :math.pow(:math.log(2), 2)))
+    k = round(-1 * :math.log2(p))
+
+    atomics = ceil(m / 64)
     atomic_ref = :atomics.new(atomics, [{:signed, false}])
 
     :persistent_term.put({__MODULE__, name}, %{
-      bits: bits,
-      hashes: hashes,
+      bits: m,
+      hashes: k,
       atomic_ref: atomic_ref
     })
 
@@ -30,10 +34,7 @@ defmodule WTinyLFU.BloomFilter do
     %{bits: bits, hashes: hashes, atomic_ref: atomic_ref} = :persistent_term.get({__MODULE__, name})
 
     for i <- 1..hashes do
-      pos = rem(Murmur.hash_x64_128(key, i), bits)
-      atomic = floor(pos / 64) + 1
-      bit = pos - (atomic - 1) * 64
-      bitmask = 1 <<< bit
+      {bitmask, atomic} = bitmask(key, i, bits)
 
       atomic_insert(atomic_ref, atomic, bitmask)
     end
@@ -48,18 +49,12 @@ defmodule WTinyLFU.BloomFilter do
   def member?(name, key) do
     %{bits: bits, hashes: hashes, atomic_ref: atomic_ref} = :persistent_term.get({__MODULE__, name})
 
-    matches =
-      for i <- 1..hashes do
-        pos = rem(Murmur.hash_x64_128(key, i), bits)
-        atomic = floor(pos / 64) + 1
-        bit = pos - (atomic - 1) * 64
-        bitmask = 1 <<< bit
+    Enum.all?(1..hashes, fn i ->
+      {bitmask, atomic} = bitmask(key, i, bits)
 
-        val = :atomics.get(atomic_ref, atomic)
-        (val ||| bitmask) == val
-      end
-
-    Enum.all?(matches)
+      val = :atomics.get(atomic_ref, atomic)
+      (val ||| bitmask) == val
+    end)
   end
 
   defp atomic_insert(ref, atomic, bitmask) do
@@ -74,6 +69,13 @@ defmodule WTinyLFU.BloomFilter do
       :ok -> :ok
       i -> atomic_insert(ref, atomic, i, bitmask)
     end
+  end
+
+  defp bitmask(key, variation, bits) do
+    pos = rem(Murmur.hash_x64_128(key, variation), bits)
+    atomic = floor(pos / 64) + 1
+    bit = pos - (atomic - 1) * 64
+    {1 <<< bit, atomic}
   end
 
   @doc false
