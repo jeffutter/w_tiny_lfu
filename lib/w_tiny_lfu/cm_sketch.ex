@@ -48,6 +48,24 @@ defmodule WTinyLFU.CMSketch do
     Enum.min(counts)
   end
 
+  @doc """
+  Maps every value in the CM Sketch.
+
+  The passed in function should be pure as it may get called multiple times for a given counter.
+  """
+  @spec map(atom(), (non_neg_integer() -> non_neg_integer())) :: :ok
+  def map(name, f) do
+    %{atomic_ref: atomic_ref} = :persistent_term.get({__MODULE__, name})
+
+    %{size: size} = :atomics.info(atomic_ref)
+
+    for i <- 1..size do
+      map(atomic_ref, i, f)
+    end
+
+    :ok
+  end
+
   @doc false
   @spec to_a(atom()) :: list(list(non_neg_integer()))
   def to_a(name) do
@@ -57,6 +75,16 @@ defmodule WTinyLFU.CMSketch do
       for slot <- 1..width do
         :atomics.get(atomic_ref, slot + width * (seed - 1))
       end
+    end
+  end
+
+  defp map(ref, i, f) do
+    old_val = :atomics.get(ref, i)
+    new_val = f.(old_val)
+
+    case :atomics.compare_exchange(ref, i, old_val, new_val) do
+      :ok -> :ok
+      _ -> map(ref, i, f)
     end
   end
 end
